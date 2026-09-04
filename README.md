@@ -1,181 +1,181 @@
 # ComfyUI-YCNodes-MiniMax-H3
 
-专为 MiniMax H3 视频模型打造的 ComfyUI 节点包，包含 6 个节点，覆盖二采条件注入、时间分段提示词控制、注意力感受野约束、动态 CFG 调度、低噪细节精修和空间分块采样。
+A ComfyUI node package specifically designed for the MiniMax H3 video model, containing 6 nodes that cover secondary sampling condition injection, time-segmented prompt control, attention receptive field constraints, dynamic CFG scheduling, low-noise detail refinement, and spatial tiled sampling.
 
-无第三方依赖，仅需 PyTorch。
+No third-party dependencies required, only PyTorch.
 
-推荐一个在线一键运行的comfyui平台
-[中国国内runninghub](https://www.runninghub.cn?inviteCode=cn-v1079) ---- [国际runninghub](https://www.runninghub.ai?inviteCode=rh-v1091) 丰富的插件和模型，点开即用
+Recommended online one-click ComfyUI platform:
+[RunningHub China](https://www.runninghub.cn?inviteCode=cn-v1079) ---- [RunningHub International](https://www.runninghub.ai?inviteCode=rh-v1091) - Rich plugins and models, ready to use
 ---
 
-## 节点总览
+## Node Overview
 
-| 节点 | 分类 | 功能 |
+| Node | Category | Function |
 |------|------|------|
-| MiniMax H3 Image to Video (Tail) | conditioning | 二采版条件节点，可透传一采 latent 续跑后段采样 |
-| H3 Prompt Relay | conditioning | 时间分段提示词控制，不同时间段只关注对应 prompt |
-| H3 Distance Attention Patcher | 注意力 | 时空高斯感受野遮罩，防止背景同化局部细节 |
-| H3 Dynamic CFG Scheduler | scheduler | 根据去噪阶段动态调整 CFG 引导强度 |
-| H3 Sigma Refiner | scheduler | 低噪区间局部加步，消除运动边缘像素颗粒 |
-| H3 Tiled Sampler | sampling | 分块采样，降显存，基于[10S-Comfy-nodes](https://github.com/TenStrip/10S-Comfy-nodes)的LTX Tiled Sampler,改造而来  |
+| MiniMax H3 Image to Video (Tail) | conditioning | Secondary sampling condition node, can pass through first-sampling latent for continued sampling |
+| H3 Prompt Relay | conditioning | Time-segmented prompt control, different prompts for different time periods |
+| H3 Distance Attention Patcher | Attention | Spatiotemporal Gaussian receptive field mask, prevents background from assimilating local details |
+| H3 Dynamic CFG Scheduler | scheduler | Dynamically adjusts CFG guidance strength based on denoising stage |
+| H3 Sigma Refiner | scheduler | Local step addition in low-noise interval, eliminates motion edge pixel artifacts |
+| H3 Tiled Sampler | sampling | Tiled sampling to reduce VRAM usage, adapted from [10S-Comfy-nodes](https://github.com/TenStrip/10S-Comfy-nodes) LTX Tiled Sampler |
 
 ---
 
-## 1. MiniMax H3 Image to Video (Tail)（二采条件节点）
+## 1. MiniMax H3 Image to Video (Tail) (Secondary Sampling Condition Node)
 
-**原理：** 官方 `MiniMaxH3ImageToVideo` 每次都输出空 AV latent（纯噪声起点），无法用于二采续跑。本节点新增 `video_latent` 输入：传入一采输出的 latent 时直接透传，并按实际帧数重算关键帧锚点，实现后段采样/高清精修。
+**Principle:** The official `MiniMaxH3ImageToVideo` always outputs empty AV latent (pure noise starting point), which cannot be used for secondary sampling continuation. This node adds a new `video_latent` input: when the first-sampling output latent is passed in, it is directly passed through, and keyframe anchors are recalculated according to the actual frame count, enabling posterior sampling/high-definition refinement.
 
-**二采高清用法：** 一采输出 LATENT 接 `video_latent`，首帧/末帧可选，`width`/`height` 自动对齐二采 latent 分辨率。`apply_keyframes` 设为 `disable` 可跳过关键帧注入。
+**Secondary HD Usage:** Connect the first-sampling output LATENT to `video_latent`, first/last frames are optional, `width`/`height` automatically align with the second-sampling latent resolution. Set `apply_keyframes` to `disable` to skip keyframe injection.
 
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `clip` | CLIP | - | H3 CLIP 模型 |
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `clip` | CLIP | - | H3 CLIP model |
 | `vae` | VAE | - | H3 VAE |
-| `prompt` | STRING | - | 提示词 |
-| `width` | INT | 1344 | 二采目标分辨率宽（自动对齐 video_latent） |
-| `height` | INT | 768 | 二采目标分辨率高（自动对齐 video_latent） |
-| `length` | INT | 124 | 帧数，未传入 video_latent 时决定空 latent |
-| `first_frame` | IMAGE | 可选 | 首帧图像 |
-| `last_frame` | IMAGE | 可选 | 尾帧图像 |
-| `video_latent` | LATENT | 可选 | 一采输出的 latent，传入后透传并重算锚点 |
-| `apply_keyframes` | COMBO | enable | enable / disable，关闭时跳过关键帧注入 |
+| `prompt` | STRING | - | Prompt |
+| `width` | INT | 1344 | Secondary sampling target width (automatically aligns with video_latent) |
+| `height` | INT | 768 | Secondary sampling target height (automatically aligns with video_latent) |
+| `length` | INT | 124 | Frame count, determines empty latent when video_latent is not passed |
+| `first_frame` | IMAGE | Optional | First frame image |
+| `last_frame` | IMAGE | Optional | Last frame image |
+| `video_latent` | LATENT | Optional | First-sampling output latent, passes through and recalculates anchors when provided |
+| `apply_keyframes` | COMBO | enable | enable / disable, skips keyframe injection when disabled |
 
 ---
 
-## 2. H3 Prompt Relay（时间分段提示词控制）
+## 2. H3 Prompt Relay (Time-Segmented Prompt Control)
 
-**原理：** H3 使用打包自注意力（text + cond + audio + video 在同一序列），不存在独立 cross-attention。本节点通过对自注意力矩阵中 video query -> text key 路径施加时间惩罚 mask，实现不同时间段只关注对应 prompt 的效果。
+**Principle:** H3 uses packed self-attention (text + cond + audio + video in the same sequence), there is no independent cross-attention. This node applies temporal penalty masks to the video query -> text key path in the self-attention matrix, achieving the effect where different time periods only attend to corresponding prompts.
 
-**用法：** 将官方 prompt 原文复制到 `local_prompts`，在分段处加 `|` 分隔符。`global_prompt`（可选）填入全局风格基调，全程对所有帧可见。支持官方图生视频节点（`MiniMaxH3ImageToVideo`）及多参版本（`MiniMaxH3ImageToVideoMultiParams`）。
+**Usage:** Copy the official prompt verbatim to `local_prompts`, add `|` delimiter at segmentation points. `global_prompt` (optional) fills in global style tone, visible to all frames throughout. Supports official image-to-video node (`MiniMaxH3ImageToVideo`) and multi-parameter version (`MiniMaxH3ImageToVideoMultiParams`).
 
 ```
 CLIP -> [MiniMaxH3ImageToVideo / MultiParams] -> CONDITIONING ─┐
 CLIP ──────────────────────────────────────────────────────────┤
-latent ──────────────────────────────────────────────────────> [H3PromptRelay] -> MODEL -> [采样器]
+latent ──────────────────────────────────────────────────────> [H3PromptRelay] -> MODEL -> [Sampler]
                                                                 ↑                   CONDITIONING
-                                                                └─── (透传) ─────────┘
+                                                                └─── (pass-through) ─────────┘
 ```
 
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `model` | MODEL | - | H3 模型 |
-| `conditioning` | CONDITIONING | - | 官方节点输出的 conditioning |
-| `clip` | CLIP | - | H3 CLIP 模型 |
-| `latent` | LATENT | - | H3 视频 latent |
-| `global_prompt` | STRING | 空 | 全局风格/主题基调，全程对所有帧可见（可选） |
-| `local_prompts` | STRING | 空 | 分段提示词，用 `\|` 分隔 |
-| `segment_lengths` | STRING | 空 | 逗号分隔的像素帧数，留空自动均分 |
-| `epsilon` | FLOAT | 0.001 | 惩罚衰减参数，越小边界越锐利 |
-| `patch_ratio` | FLOAT | 1.0 | 0.0-1.0，打 patch 的 DiT Block 比例。有语音时建议 0.3-0.7 |
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `model` | MODEL | - | H3 model |
+| `conditioning` | CONDITIONING | - | Conditioning output from official node |
+| `clip` | CLIP | - | H3 CLIP model |
+| `latent` | LATENT | - | H3 video latent |
+| `global_prompt` | STRING | Empty | Global style/theme tone, visible to all frames throughout (optional) |
+| `local_prompts` | STRING | Empty | Segmented prompts, separated by `\|` |
+| `segment_lengths` | STRING | Empty | Comma-separated pixel frame counts, auto-divided if left empty |
+| `epsilon` | FLOAT | 0.001 | Penalty decay parameter, smaller values create sharper boundaries |
+| `patch_ratio` | FLOAT | 1.0 | 0.0-1.0, proportion of DiT Blocks to patch. Recommend 0.3-0.7 when audio is present |
 
 ---
 
-## 3. H3 Distance Attention Patcher（距离注意力约束）
+## 3. H3 Distance Attention Patcher (Distance Attention Constraint)
 
-**原理：** 针对全景场景下肢体和面部容易被背景同化或扯碎的问题，通过时空高斯感受野遮罩强行约束模型在中前期去噪时的局部注意力，阻断大面积背景对微小细节的特征同化。
+**Principle:** Addresses the issue where limbs and faces are easily assimilated or torn apart by the background in panoramic scenes. Forces the model to constrain local attention during mid-early denoising through spatiotemporal Gaussian receptive field masks, blocking large-area background feature assimilation of tiny details.
 
-| 参数 | 类型 | 默认值 | 范围 | 说明 |
-|------|------|--------|------|------|
-| `model` | MODEL | - | - | H3 模型 |
-| `receptive_field_scale` | FLOAT | 15.0 | 1.0 ~ 100.0 | 感受野尺度，越小越局部 |
-| `temporal_weight` | FLOAT | 2.0 | 0.1 ~ 10.0 | 时间轴相对空间轴的距离权重 |
-| `start_at_sigma` | FLOAT | 4.5 | 0.0 ~ 20.0 | 开始约束的 Sigma 阈值 |
-| `end_at_sigma` | FLOAT | 0.0 | 0.0 ~ 5.0 | 结束约束的 Sigma 阈值 |
-| `num_frames` | INT | 17 | 1 ~ 256 | 视频总帧数 |
-| `original_width` | INT | 864 | 128 ~ 2048 | 视频宽度 |
-| `original_height` | INT | 480 | 128 ~ 2048 | 视频高度 |
-
----
-
-## 4. H3 Dynamic CFG Scheduler（动态 CFG 调度）
-
-**原理：** 根据去噪阶段动态调整 CFG 引导强度。高 sigma（早期构图）用低 CFG 保大形，低 sigma（后期细节）用高 CFG 提细节。H3 flow matching 默认 CFG=1.0，动态范围很小，微调即可。
-
-**接线：** 插在 MODEL 和采样器之间。
-
-| 参数 | 类型 | 默认值 | 范围 | 说明 |
-|------|------|--------|------|------|
-| `model` | MODEL | - | - | H3 模型 |
-| `cfg_low` | FLOAT | 0.9 | 0.5 ~ 2.0 | 高 sigma 时的 CFG（早期构图） |
-| `cfg_high` | FLOAT | 1.1 | 0.5 ~ 2.0 | 低 sigma 时的 CFG（后期细节） |
-| `start_at_sigma` | FLOAT | 3.0 | 0.0 ~ 20.0 | 开始动态调度的 Sigma 阈值 |
-| `end_at_sigma` | FLOAT | 0.0 | 0.0 ~ 5.0 | 结束动态调度的 Sigma 阈值 |
+| Parameter | Type | Default | Range | Description |
+|-----------|------|---------|-------|-------------|
+| `model` | MODEL | - | - | H3 model |
+| `receptive_field_scale` | FLOAT | 15.0 | 1.0 ~ 100.0 | Receptive field scale, smaller = more local |
+| `temporal_weight` | FLOAT | 2.0 | 0.1 ~ 10.0 | Distance weight of temporal axis relative to spatial axis |
+| `start_at_sigma` | FLOAT | 4.5 | 0.0 ~ 20.0 | Sigma threshold to start constraint |
+| `end_at_sigma` | FLOAT | 0.0 | 0.0 ~ 5.0 | Sigma threshold to end constraint |
+| `num_frames` | INT | 17 | 1 ~ 256 | Total video frames |
+| `original_width` | INT | 864 | 128 ~ 2048 | Video width |
+| `original_height` | INT | 480 | 128 ~ 2048 | Video height |
 
 ---
 
-## 5. H3 Sigma Refiner（低噪细节精修）
+## 4. H3 Dynamic CFG Scheduler (Dynamic CFG Scheduling)
 
-**原理：** 对低 Sigma 区间进行局部加步——保留原始调度的高噪头部不动，从阈值点起把尾部重采样成更长、更平滑的曲线，让模型在细节收尾阶段多走几步，消除高速运动边缘的马赛克与像素紊乱。
+**Principle:** Dynamically adjusts CFG guidance strength based on denoising stage. Low CFG at high sigma (early composition) preserves overall shape, high CFG at low sigma (late details) enhances details. H3 flow matching defaults to CFG=1.0, dynamic range is very small, fine-tuning is sufficient.
 
-**接线：** 插在调度器和采样器之间。
+**Connection:** Insert between MODEL and sampler.
+
+| Parameter | Type | Default | Range | Description |
+|-----------|------|---------|-------|-------------|
+| `model` | MODEL | - | - | H3 model |
+| `cfg_low` | FLOAT | 0.9 | 0.5 ~ 2.0 | CFG at high sigma (early composition) |
+| `cfg_high` | FLOAT | 1.1 | 0.5 ~ 2.0 | CFG at low sigma (late details) |
+| `start_at_sigma` | FLOAT | 3.0 | 0.0 ~ 20.0 | Sigma threshold to start dynamic scheduling |
+| `end_at_sigma` | FLOAT | 0.0 | 0.0 ~ 5.0 | Sigma threshold to end dynamic scheduling |
+
+---
+
+## 5. H3 Sigma Refiner (Low-Noise Detail Refinement)
+
+**Principle:** Local step addition in low Sigma interval — keeps the high-noise head of the original schedule unchanged, resamples the tail from the threshold point into a longer, smoother curve, allowing the model to take more steps during the detail finishing phase, eliminating mosaics and pixel chaos at high-motion edges.
+
+**Connection:** Insert between scheduler and sampler.
 
 ```
 BasicScheduler -> (sigmas) -> H3 Sigma Refiner -> (sigmas) -> SamplerCustomAdvanced
 ```
 
-| 参数 | 类型 | 默认值 | 范围 | 说明 |
-|------|------|--------|------|------|
-| `sigmas` | SIGMAS | - | - | 原始噪声序列 |
-| `extra_steps` | INT | 1 | 0 ~ 15 | 低噪区间额外增加的步数 |
-| `start_at_sigma` | FLOAT | 0.7 | 0.0 ~ 20.0 | 启动加步的 Sigma 阈值 |
-| `end_at_sigma` | FLOAT | 0.0 | 0.0 ~ 5.0 | 结束细化的 Sigma 边界 |
-| `spacing` | COMBO | cosine | cosine / linear / exponential | 尾部插值分布曲线 |
+| Parameter | Type | Default | Range | Description |
+|-----------|------|---------|-------|-------------|
+| `sigmas` | SIGMAS | - | - | Original noise sequence |
+| `extra_steps` | INT | 1 | 0 ~ 15 | Extra steps added in low-noise interval |
+| `start_at_sigma` | FLOAT | 0.7 | 0.0 ~ 20.0 | Sigma threshold to activate step addition |
+| `end_at_sigma` | FLOAT | 0.0 | 0.0 ~ 5.0 | Sigma boundary to end refinement |
+| `spacing` | COMBO | cosine | cosine / linear / exponential | Tail interpolation distribution curve |
 
-**spacing 曲线：**
-- **cosine**（默认）：趋近 0 时分布更密，消噪最丝滑。
-- **linear**：均匀分布。
-- **exponential**：能量前移，尾部大步走向末点。
+**spacing curves:**
+- **cosine** (default): Denser distribution approaching 0, smoothest noise elimination.
+- **linear**: Uniform distribution.
+- **exponential**: Energy shifts forward, large steps toward the end point.
 
 ---
 
-## 6. H3 Tiled Sampler（空间分块采样）
+## 6. H3 Tiled Sampler (Spatial Tiled Sampling)
 
-**原理：** 768p/2K 高分辨率上采样精修时，H3 DiT 打包自注意力的 token 数远超训练分布，导致显存爆炸或画面质量下降。本节点沿 H 或 W 轴空间分块，每块独立采样后 cosine 窗口融合，严格保持 H3 视频/音频独立模态，音频 passthrough 不参与采样。
+**Principle:** During 768p/2K high-resolution upsampling refinement, H3 DiT packed self-attention token count far exceeds training distribution, causing VRAM explosion or quality degradation. This node tiles along H or W axis spatially, samples each tile independently then fuses with cosine window, strictly maintaining H3 video/audio independent modalities, audio passthrough does not participate in sampling.
 
-**接线：** 替代 `SamplerCustomAdvanced`，接入 noise / guider / sampler / sigmas / latent_image。
+**Connection:** Replace `SamplerCustomAdvanced`, connect to noise / guider / sampler / sigmas / latent_image.
 
-**适用场景：** 二采高清精修（低噪起步），不适用重去噪（纯噪声起点会破坏全局一致性）。
+**Applicable Scenarios:** Secondary HD refinement (low-noise starting point), not suitable for heavy denoising (pure noise starting point will destroy global consistency).
 
-| 参数 | 类型 | 默认值 | 范围 | 说明 |
-|------|------|--------|------|------|
-| `noise` | NOISE | - | - | H3 噪声生成器 |
+| Parameter | Type | Default | Range | Description |
+|-----------|------|---------|-------|-------------|
+| `noise` | NOISE | - | - | H3 noise generator |
 | `guider` | GUIDER | - | - | H3 CFG/STG guider |
-| `sampler` | SAMPLER | - | - | 采样算法 |
-| `sigmas` | SIGMAS | - | - | H3 噪声调度 |
+| `sampler` | SAMPLER | - | - | Sampling algorithm |
+| `sigmas` | SIGMAS | - | - | H3 noise schedule |
 | `latent_image` | LATENT | - | - | H3 video latent |
-| `bypass_tiling` | BOOLEAN | False | - | True 时单次采样，等同 SamplerCustomAdvanced |
-| `tile_axis` | COMBO | auto | auto / H / W | 分块轴，auto 取较长轴 |
-| `n_tiles` | INT | 2 | 1 ~ 8 | 分块数，1 等同 bypass |
-| `tile_overlap` | INT | 8 | 0 ~ 32 | 相邻块在 latent 域的重叠 token 数 |
-| `max_size_for_no_tile` | INT | 24 | 8 ~ 256 | 目标轴 ≤ 此值时自动 bypass |
-| `target_frames` | INT | 17 | 1 ~ 512 | 最小帧数保护（非截断），不足时补齐 |
-| `frame_padding_mode` | COMBO | replicate_last | replicate_last / zero / error | 帧数不足时的填充方式 |
-| `debug` | BOOLEAN | False | - | 打印每个 tile 的 shape 和 value range |
+| `bypass_tiling` | BOOLEAN | False | - | When True, single sampling, equivalent to SamplerCustomAdvanced |
+| `tile_axis` | COMBO | auto | auto / H / W | Tiling axis, auto takes the longer axis |
+| `n_tiles` | INT | 2 | 1 ~ 8 | Number of tiles, 1 equals bypass |
+| `tile_overlap` | INT | 8 | 0 ~ 32 | Overlapping token count between adjacent blocks in latent domain |
+| `max_size_for_no_tile` | INT | 24 | 8 ~ 256 | Auto bypass when target axis ≤ this value |
+| `target_frames` | INT | 17 | 1 ~ 512 | Minimum frame protection (non-truncation), pads if insufficient |
+| `frame_padding_mode` | COMBO | replicate_last | replicate_last / zero / error | Padding method when frame count is insufficient |
+| `debug` | BOOLEAN | False | - | Print shape and value range for each tile |
 
 ---
 
-## 安装
+## Installation
 
-1. 将 `ComfyUI-YCNodes-MiniMax-H3` 目录放入 `ComfyUI/custom_nodes/` 下。
-2. 重启 ComfyUI。
-3. 节点面板搜索 `H3` 即可找到全部节点。
+1. Place the `ComfyUI-YCNodes-MiniMax-H3` directory into `ComfyUI/custom_nodes/`.
+2. Restart ComfyUI.
+3. Search for `H3` in the node panel to find all nodes.
 
-## 推荐工作流接线
+## Recommended Workflow Connections
 
-**一采（低分辨率）：**
+**First Sampling (Low Resolution):**
 ```
 [CLIP] ─────────────────────────────────────────────────────────┐
-[图像] -> [MiniMaxH3ImageToVideo / MultiParams] -> COND ────────┤
+[Image] -> [MiniMaxH3ImageToVideo / MultiParams] -> COND ────────┤
                                                                 ├─> [H3PromptRelay] -> MODEL ─┐
 [CLIP] ─────────────────────────────────────────────────────────┘                            │
-                                                                                             ├─> [H3DynamicCFGScheduler] -> MODEL -> [采样器]
+                                                                                             ├─> [H3DynamicCFGScheduler] -> MODEL -> [Sampler]
 [BasicScheduler] -> [H3SigmaRefiner] -> SIGMAS ──────────────────────────────────────────────┘
 ```
 
-**二采（高清精修，Tail 节点续跑，Tiled 采样）：**
+**Second Sampling (HD Refinement, Tail Node Continuation, Tiled Sampling):**
 ```
-一采LATENT -> video_latent ─┐
-[图像] -> [MiniMaxH3ImageToVideoTail] -> COND ─┐
+First-Sampling LATENT -> video_latent ─┐
+[Image] -> [MiniMaxH3ImageToVideoTail] -> COND ─┐
 [CLIP] ────────────────────────────────────────┤
                                                 ├─> [H3PromptRelay] -> MODEL -> [H3DynamicCFGScheduler] -> MODEL ─┐
                                                 LATENT ───────────────────────────────────────────────────────────┤
